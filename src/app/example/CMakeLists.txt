@@ -1,23 +1,27 @@
-add_library(app_includes INTERFACE)
-
-target_include_directories(app_includes INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/source
-    ${CMAKE_CURRENT_SOURCE_DIR}/sink
-    ${CMAKE_CURRENT_SOURCE_DIR}/tasks
-    ${CMAKE_CURRENT_SOURCE_DIR}/package
+# example
+# Collect all node implementations under nodes/ automatically.
+# NOTE: GLOB is convenient for samples; CONFIGURE_DEPENDS makes CMake re-scan on file add/remove.
+file(GLOB_RECURSE EXAMPLE_NODE_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/nodes/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/nodes/*/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/nodes/*/*/*.cpp"
 )
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/package)
+# Exclude legacy monolithic implementation (kept for reference only).
+list(FILTER EXAMPLE_NODE_SOURCES EXCLUDE REGEX "/nodes/dag_nodes\\.cpp$")
 
-aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/sink/test_consumer APP_SRC)
-aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/source/test_producer APP_SRC)
-aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/tasks/feature_extractor APP_SRC)
-aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/tasks/image_preprocess APP_SRC)
-aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/tasks/object_detector APP_SRC)
-aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/tasks/object_tracker APP_SRC)
-aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/tasks/res_sender APP_SRC)
+add_executable(example
+    example.cpp
+    ${EXAMPLE_NODE_SOURCES}
+    # Framework sources
+    ${SRC_DIR}
+)
 
-add_executable(example_stream example_stream.cpp ${SRC_DIR} ${APP_SRC})
+# Add example directory as include path (allows #include "packet/xxx.h" style)
+target_include_directories(example PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(example_stream ${app_includes} ${dynamic_libs} )
-install(TARGETS example_stream RUNTIME DESTINATION ./)
+target_link_libraries(example
+    ${dynamic_libs}
+)
+
+install(TARGETS example DESTINATION bin)

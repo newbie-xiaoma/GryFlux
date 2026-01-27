@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16.0)
 project(GryFlux VERSION 1.0.0 LANGUAGES CXX C)
 
+message(STATUS "Graph profiling build switch: compile with -DGRYFLUX_BUILD_PROFILING=1 (or 0) and rebuild")
+
 # Set common compile warning suppressions and linking options
 function(set_common_compile_flags)
     set(common_flags "-Wl,--allow-shlib-undefined -Wno-class-memaccess -Wno-deprecated-declarations -Wno-sign-compare")
@@ -56,6 +58,12 @@ set(dynamic_libs
   pthread 
   project_includes
 )
+
+# Link filesystem library for GCC < 9
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+    list(APPEND dynamic_libs stdc++fs)
+    message(STATUS "Adding stdc++fs library for GCC ${CMAKE_CXX_COMPILER_VERSION}")
+endif()
 
 # Source files collection
 aux_source_directory(${PROJECT_SOURCE_DIR}/src/common SRC_DIR)

@@ -1,135 +1,183 @@
 /*************************************************************************************************************************
- * Copyright 2025 Grifcc
+ * Copyright 2025 Grifcc & Sunhaihua1
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
- * documentation files (the “Software”), to deal in the Software without restriction, including without limitation the
+ * documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
  * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to the following conditions:
  *
  * The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
  * Software.
  *
- * THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
  * WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
  * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *************************************************************************************************************************/
 #include "framework/task_scheduler.h"
+#include "framework/graph_template.h"
+#include "framework/node_base.h"
+#include "framework/profiler/profiling.h"
 #include "utils/logger.h"
-#include <iostream>
-#include <unordered_set>
-#include <queue>
-#include <mutex>
+#include <vector>
+#include <stdexcept>
 
 namespace GryFlux
 {
-    // 添加互斥锁用于保护任务执行
-    std::mutex taskExecutionMutex;
-
-    TaskScheduler::TaskScheduler(size_t numThreads)
-        : threadPool_(numThreads) {}
-
-    void TaskScheduler::addTask(std::shared_ptr<TaskNode> task)
+    TaskScheduler::TaskScheduler(std::shared_ptr<ResourcePool> resourcePool,
+                                   std::shared_ptr<ThreadPool> threadPool)
+        : resourcePool_(resourcePool), threadPool_(threadPool)
     {
-        if (!task)
-        {
-            return;
-        }
-        tasks_[task->getId()] = task;
     }
 
-    std::shared_ptr<TaskNode> TaskScheduler::getTask(const std::string &id)
+    void TaskScheduler::setCompletionCallback(std::function<void(DataPacket *)> callback)
     {
-        auto it = tasks_.find(id);
-        if (it != tasks_.end())
-        {
-            return it->second;
-        }
-        return nullptr;
+        completionCallback_ = callback;
     }
 
-    std::shared_ptr<DataObject> TaskScheduler::execute(const std::string &outputTaskId)
+    void TaskScheduler::scheduleNode(DataPacket *packet, size_t nodeIndex, ThreadPool::Priority priority)
     {
-        auto outputTask = getTask(outputTaskId);
-        if (!outputTask)
-        {
-            LOG.error("Task not found: %s", outputTaskId.c_str());
-            return nullptr;
-        }
-
-        executeTask(outputTask);
-
-        return outputTask->getResult();
-    }
-
-    void TaskScheduler::executeTask(std::shared_ptr<TaskNode> task)
-    {
-        // 防止空指针解引用
-        if (!task) {
-            LOG.error("Attempted to execute null task");
-            return;
-        }
-        
-        // 如果任务已经执行过，则直接返回
-        if (task->isExecuted())
+        if (!packet || packet->executionState_.isGraphCompleted.load(std::memory_order_acquire))
         {
             return;
         }
 
-        // 首先执行所有依赖任务
-        std::vector<std::future<void>> futures;
-        for (const auto &dep : task->getDependencies())
+        // 默认使用 packet idx 作为主优先级，确保小 idx 的包优先完成。
+        const ThreadPool::Priority packetPriority =
+            (priority != 0) ? priority : static_cast<ThreadPool::Priority>(packet->getIdx());
+
+        if constexpr (Profiling::kBuildProfiling)
         {
-            if (dep && !dep->isExecuted())
+            Profiling::recordNodeScheduled(packet, packet->executionState_.graphTemplate->getTask(nodeIndex).nodeId);
+        }
+
+        packet->markTaskScheduled();
+        threadPool_->enqueue(packetPriority, [this, packet, nodeIndex, packetPriority]()
+                             { executeNode(packet, nodeIndex, packetPriority); });
+    }
+
+    void TaskScheduler::executeNode(DataPacket *packet, size_t nodeIndex, ThreadPool::Priority priority)
+    {
+        auto &tmpl = packet->executionState_.graphTemplate;
+        auto &node = tmpl->getTask(nodeIndex);
+
+        if (packet->executionState_.isGraphCompleted.load(std::memory_order_acquire))
+        {
+            if (packet->markTaskFinished())
             {
-                futures.push_back(threadPool_.enqueue([this, dep]()
+                onGraphCompleted(packet);
+            }
+            return;
+        }
+
+        std::shared_ptr<Context> ctx;
+
+        const bool packetFailed = packet->executionState_.hasFailed.load(std::memory_order_acquire);
+
+        // 如果 packet 已失败：跳过资源获取与执行，但仍推进 DAG，保证最终能到达 output 节点。
+        if (packetFailed)
+        {
+            if constexpr (Profiling::kBuildProfiling)
+            {
+                Profiling::recordNodeSkipped(packet, node.nodeId);
+            }
+        }
+        else
+        {
+            if (!node.resourceTypeName.empty())
+            {
+                const auto timeout = resourcePool_ ? resourcePool_->getAcquireTimeout(node.resourceTypeName)
+                                                   : std::chrono::milliseconds(0);
+                ctx = resourcePool_->acquire(node.resourceTypeName, timeout, &packet->executionState_.hasFailed, priority);
+            }
+
+            Profiling::NodeScope execScope(packet, node.nodeId);
+
+            if (!packet->executionState_.hasFailed.load(std::memory_order_acquire))
+            {
+                if (!node.nodeImpl)
                 {
-                    try {
-                        executeTask(dep);
-                    } catch (const std::exception& e) {
-                        LOG.error("Exception while executing dependency: %s", e.what());
-                    } catch (...) {
-                        LOG.error("Unknown exception while executing dependency");
+                    execScope.markFailed();
+                    LOG.error("Node '%s' (index %zu) implementation is null", node.nodeId.c_str(), nodeIndex);
+                    packet->markFailed();
+                }
+                else if (!node.resourceTypeName.empty() && !ctx)
+                {
+                    execScope.markFailed();
+                    LOG.error("Failed to acquire resource '%s' for node '%s' (index %zu)",
+                              node.resourceTypeName.c_str(), node.nodeId.c_str(), nodeIndex);
+                    packet->markFailed();
+                }
+                else
+                {
+                    try
+                    {
+                        if (ctx)
+                        {
+                            node.nodeImpl->execute(*packet, *ctx);
+                        }
+                        else
+                        {
+                            node.nodeImpl->execute(*packet, None::instance());
+                        }
                     }
-                }));
+                    catch (const std::exception &e)
+                    {
+                        execScope.markFailed();
+                        LOG.error("Node '%s' (index %zu) execution failed: %s",
+                                  node.nodeId.c_str(), nodeIndex, e.what());
+                        packet->markFailed();
+                    }
+                }
             }
         }
 
-        // 等待所有依赖任务完成
-        for (auto &future : futures)
+        // Always release the resource (if acquired), even if the packet has failed.
+        if (ctx)
         {
-            try {
-                future.wait();
-            } catch (const std::exception& e) {
-                LOG.error("Exception while waiting for task dependency: %s", e.what());
-            }
+            resourcePool_->release(node.resourceTypeName, ctx);
         }
 
-        try {
-            task->executeOnce();
-        } catch (const std::exception& e) {
-            LOG.error("Exception in task [%s]: %s", task->getId().c_str(), e.what());
-        } catch (...) {
-            LOG.error("Unknown exception in task [%s]", task->getId().c_str());
-        }
-    }
+        // Always advance the DAG so the output node can be reached.
+        packet->markNodeCompleted(nodeIndex);
 
-    void TaskScheduler::clear()
-    {
-        tasks_.clear();
-    }
-    
-    std::unordered_map<std::string, double> TaskScheduler::getTaskExecutionTimes() const
-    {
-        std::unordered_map<std::string, double> executionTimes;
-        for (const auto& pair : tasks_)
+        std::vector<std::function<void()>> successorTasks;
+        successorTasks.reserve(node.childIndices.size());
+
+        for (size_t succIdx : node.childIndices)
         {
-            if (pair.second->isExecuted())
+            packet->notifyPredecessorCompleted(succIdx);
+
+            if (packet->tryMarkNodeReady(succIdx))
             {
-                executionTimes[pair.first] = pair.second->getExecutionTimeMs();
+                if constexpr (Profiling::kBuildProfiling)
+                {
+                    Profiling::recordNodeScheduled(packet, tmpl->getTask(succIdx).nodeId);
+                }
+
+                packet->markTaskScheduled();
+                successorTasks.emplace_back([this, packet, succIdx, priority]()
+                                            { executeNode(packet, succIdx, priority); });
             }
         }
-        return executionTimes;
+
+        if (!successorTasks.empty())
+        {
+            threadPool_->enqueueBatch(priority, std::move(successorTasks));
+        }
+
+        if (packet->markTaskFinished())
+        {
+            onGraphCompleted(packet);
+        }
+    }
+
+    void TaskScheduler::onGraphCompleted(DataPacket *packet)
+    {
+        if (completionCallback_)
+        {
+            completionCallback_(packet);
+        }
     }
 
 } // namespace GryFlux
