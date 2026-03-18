@@ -1,1 +1,2 @@
 add_subdirectory(example)
+add_subdirectory(yolox_detection_310p)
