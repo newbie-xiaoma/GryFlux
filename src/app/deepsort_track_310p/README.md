@@ -1,6 +1,6 @@
 # deepsort_track_310p
 
-`deepsort_track_310p` 是一个面向 Ascend 310P + ACL 的多目标跟踪 deployment app。它按 GryFlux app 结构组织了 `packet/context/source/consumer/nodes`，并把检测模型与 ReID 模型都接到了 `ResourcePool` 中。
+`deepsort_track_310p` 是一个面向 Ascend 310P + ACL 的多目标跟踪 deployment app。它按 GryFlux app 结构组织了 `packet/context/source/consumer/nodes`，主入口只保留必要路径参数，模型和调度参数改为代码内全局配置。
 
 ## 目录
 
@@ -49,10 +49,24 @@ cmake --build build/deepsort_track_310p --target deepsort_track_310p -j$(nproc)
 ```bash
 ./build/deepsort_track_310p/deepsort_track_310p \
   --input /path/to/input.mp4 \
-  --output /path/to/output.mp4 \
   --yolox src/app/deepsort_track_310p/3rdparty/models/yolox.om \
   --reid src/app/deepsort_track_310p/3rdparty/models/reid.om
 ```
+
+可选参数：
+
+```bash
+./build/deepsort_track_310p/deepsort_track_310p \
+  --input /path/to/input.mp4 \
+  --yolox src/app/deepsort_track_310p/3rdparty/models/yolox.om \
+  --reid src/app/deepsort_track_310p/3rdparty/models/reid.om \
+  --output /path/to/output.mp4 \
+  --profile
+```
+
+- 不传 `--output` 时，默认输出到 `install/deepsort_track_310p_output.mp4`
+- 传入 `--profile` 时，会启用框架 profiling，并将时间线保存到 `install/deepsort_track_310p_timeline.json`
+- profiling 仍受编译期开关控制；需使用 `-DGRYFLUX_BUILD_PROFILING=1` 重新编译后，`--profile` 才会实际产生统计结果
 
 ## 设计说明
 
@@ -60,4 +74,5 @@ cmake --build build/deepsort_track_310p --target deepsort_track_310p -j$(nproc)
 - 检测模型和 ReID 模型都通过 ACL `Context` 多实例注册到 `ResourcePool`。
 - `TrackDataPacket` 预分配检测输入 NCHW 缓冲、YOLOX 默认输出张量容量，以及跟踪阶段常用容器容量。
 - DeepSORT 跟踪器保留在 `consumer/` 阶段串行执行，保证输出视频顺序稳定。
+- 检测尺寸、ReID 尺寸、阈值、线程池大小和实例数等参数集中在 `deepsort_track_310p.cpp` 的全局配置中维护。
 - CMake 为 Ascend 常见运行库目录写入了 `RPATH`；若目标机驱动或 profiling 组件未就绪，ACL 仍可能在启动阶段输出平台相关日志。

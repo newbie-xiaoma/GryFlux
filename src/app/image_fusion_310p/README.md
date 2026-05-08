@@ -1,6 +1,6 @@
 # image_fusion_310p
 
-`image_fusion_310p` 是一个面向 Ascend 310P + ACL 的图像融合 deployment app。它按 GryFlux app 结构拆分为 `packet/context/source/consumer/nodes`，并把 ACL 推理资源通过 `ResourcePool` 多实例方式接入。
+`image_fusion_310p` 是一个面向 Ascend 310P + ACL 的图像融合 deployment app。它按 GryFlux app 结构拆分为 `packet/context/source/consumer/nodes`，主入口只保留必要路径参数，模型和调度参数改为代码内全局配置。
 
 ## 目录
 
@@ -48,18 +48,23 @@ cmake --build build/image_fusion_310p --target image_fusion_310p -j$(nproc)
 ./build/image_fusion_310p/image_fusion_310p \
   --vis /path/to/vis_dir \
   --ir /path/to/ir_dir \
-  --output /path/to/output_dir \
   --model /path/to/fusion.om
 ```
 
 可选参数：
 
-- `--threads <num>`: `AsyncPipeline` 线程池大小，默认 `8`
-- `--packets <num>`: 最大活跃 packet 数量，默认 `16`
-- `--npu-instances <num>`: ACL context 数量，默认 `2`
-- `--device <num>`: Ascend device id，默认 `0`
-- `--width <num>`: 模型输入宽度，默认 `640`
-- `--height <num>`: 模型输入高度，默认 `480`
+```bash
+./build/image_fusion_310p/image_fusion_310p \
+  --vis /path/to/vis_dir \
+  --ir /path/to/ir_dir \
+  --model /path/to/fusion.om \
+  --output /path/to/output_dir \
+  --profile
+```
+
+- 不传 `--output` 时，默认输出到 `install/image_fusion_310p_output/`
+- 传入 `--profile` 时，会启用框架 profiling，并将时间线保存到 `install/image_fusion_310p_timeline.json`
+- profiling 仍受编译期开关控制；需使用 `-DGRYFLUX_BUILD_PROFILING=1` 重新编译后，`--profile` 才会实际产生统计结果
 
 ## 设计说明
 
@@ -67,3 +72,4 @@ cmake --build build/image_fusion_310p --target image_fusion_310p -j$(nproc)
 - `FusionDataPacket` 在构造阶段预分配融合流程用到的 OpenCV Mat 缓冲
 - `ResultConsumer` 在 consumer 端按 packet 序号重排后顺序落盘
 - ACL 资源以多实例 `InferContext` 注册到 `ResourcePool`
+- 模型 fallback 尺寸、线程池大小、活跃 packet 上限和 NPU 实例数等参数集中在 `image_fusion_310p.cpp` 的全局配置中维护

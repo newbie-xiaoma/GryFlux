@@ -1,6 +1,6 @@
 # yolox_detection_310p
 
-`yolox_detection_310p` 是一个面向 Ascend 310P + ACL 的视频目标检测 deployment app。它按 GryFlux 的 app 结构组织了 `packet/context/source/consumer/nodes`，主入口只负责参数解析、ACL 初始化、资源注册、图模板构建和异步流水线启动。
+`yolox_detection_310p` 是一个面向 Ascend 310P + ACL 的视频目标检测 deployment app。它按 GryFlux 的 app 结构组织了 `packet/context/source/consumer/nodes`，主入口只保留必要参数解析，其他推理与调度参数改为代码内全局设置。
 
 ## 目录
 
@@ -56,21 +56,28 @@ cmake --build build --target yolox_detection_310p -j$(nproc)
 ```bash
 ./build/src/app/yolox_detection_310p/yolox_detection_310p \
   --input /path/to/input.mp4 \
-  --output /path/to/output.mp4 \
-  --model src/app/yolox_detection_310p/3rdparty/models/yolox.om \
-  --width 640 \
-  --height 640 \
-  --conf 0.3 \
-  --nms 0.45 \
-  --threads 12 \
-  --max-active 8 \
-  --npu-instances 2
+  --model src/app/yolox_detection_310p/3rdparty/models/yolox.om
 ```
+
+可选参数：
+
+```bash
+./build/src/app/yolox_detection_310p/yolox_detection_310p \
+  --input /path/to/input.mp4 \
+  --model src/app/yolox_detection_310p/3rdparty/models/yolox.om \
+  --output /path/to/output.mp4 \
+  --profile
+```
+
+- 不传 `--output` 时，默认输出到 `install/yolox_detection_310p_output.mp4`
+- 传入 `--profile` 时，会启用框架 profiling，并将时间线保存到 `install/yolox_detection_310p_timeline.json`
+- profiling 仍受编译期开关控制；需使用 `-DGRYFLUX_BUILD_PROFILING=1` 重新编译后，`--profile` 才会实际产生统计结果
 
 ## 设计说明
 
 - Ascend 资源通过 `ResourcePool` 以多个 `InferContext` 实例注册到 `npu` 资源类型。
 - `DetectDataPacket` 会预分配输入 NCHW 缓冲和默认输出张量容量，减少热路径扩容。
 - DAG 显式组织为 `input -> preprocess -> inference -> postprocess -> output`，视频读取和结果写出分别放在 `source/` 与 `consumer/`。
+- 模型尺寸、阈值、线程池大小、活跃包上限和 NPU 实例数等参数集中在 `yolox_detection_310p.cpp` 的全局设置中维护。
 - `3rdparty/` 目录保留为 app 本地部署入口，默认不提交实际厂商运行库和模型文件。
 - CMake 为 Ascend 常见运行库目录写入了 `RPATH`；若目标机驱动或 profiling 组件未就绪，ACL 仍可能在启动阶段输出平台相关日志。

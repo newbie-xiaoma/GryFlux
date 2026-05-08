@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
+get_filename_component(GRYFLUX_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(yolox_detection_310p LANGUAGES CXX C)
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-    get_filename_component(GRYFLUX_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 
     add_library(project_includes INTERFACE)
     target_include_directories(project_includes INTERFACE
@@ -16,6 +16,10 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         pthread
         project_includes
     )
+
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+        list(APPEND dynamic_libs stdc++fs)
+    endif()
 
     aux_source_directory(${GRYFLUX_ROOT_DIR}/src/framework SRC_DIR)
     aux_source_directory(${GRYFLUX_ROOT_DIR}/src/utils SRC_DIR)
@@ -75,6 +79,7 @@ endif()
 
 set(APP_SOURCES
     consumer/result_consumer.cpp
+    context/acl_environment.cpp
     context/infercontext.cpp
     source/image_data_source.cpp
     yolox_detection_310p.cpp

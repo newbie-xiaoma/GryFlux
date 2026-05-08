@@ -5,6 +5,7 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <array>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -12,19 +13,35 @@
 
 namespace {
 
+constexpr std::array<const char*, 80> kCocoClassNames = {
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep",
+    "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
+    "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
+    "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv",
+    "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
+    "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush"};
+
 double NormalizeFps(double fps) {
     return fps > 0.0 ? fps : 25.0;
 }
 
 std::string BuildLabel(const Detection& detection) {
     std::ostringstream label;
-    label << (detection.class_id == 0 ? "Person " : "Car ") << std::fixed
-          << std::setprecision(2) << detection.score;
+    if (detection.class_id >= 0 &&
+        detection.class_id < static_cast<int>(kCocoClassNames.size())) {
+        label << kCocoClassNames[static_cast<size_t>(detection.class_id)];
+    } else {
+        label << "class_" << detection.class_id;
+    }
+    label << ' ' << std::fixed << std::setprecision(2) << detection.score;
     return label.str();
-}
-
-bool IsVisualizedClass(int class_id) {
-    return class_id == 0 || class_id == 2;
 }
 
 }  // namespace
@@ -58,10 +75,6 @@ void ResultConsumer::consume(std::unique_ptr<GryFlux::DataPacket> packet) {
 
     int rendered_count = 0;
     for (const auto& detection : detection_packet->detections) {
-        if (!IsVisualizedClass(detection.class_id)) {
-            continue;
-        }
-
         cv::rectangle(
             detection_packet->original_image,
             cv::Point(static_cast<int>(detection.x1),
